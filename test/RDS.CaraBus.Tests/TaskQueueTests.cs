@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Attributes.Jobs;
 using NUnit.Framework;
 using RDS.CaraBus.Utility;
 
@@ -28,7 +30,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t => countdown.Signal());
+                queue.WaitWhenCompleted().ContinueWith(t => countdown.Signal());
 
                 queue.Enqueue(() => {
                     Interlocked.Increment(ref completed);
@@ -52,21 +54,15 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(autoStart: false))
             {
-                void Sub(int id)
+                void Sub()
                 {
-                    queue.WaitWhenEmpty.ContinueWith(t =>
+                    queue.WaitWhenCompleted().ContinueWith(t =>
                     {
-                        if (queue.WaitWhenEmpty.Id != id)
-                        {
-                            Sub(queue.WaitWhenEmpty.Id);
-                        }
-
                         return countdown.Signal();
                     });
                 }
 
-                Sub(queue.WaitWhenEmpty.Id);
-
+                Sub();
                 queue.Enqueue(() => {
                     Interlocked.Increment(ref completed);
                     return Task.CompletedTask;
@@ -83,6 +79,7 @@ namespace RDS.CaraBus.Tests
                 Thread.Sleep(30);
                 countdown.Reset();
 
+                Sub();
                 queue.Enqueue(() => {
                     Interlocked.Increment(ref completed);
                     return Task.CompletedTask;
@@ -115,7 +112,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t =>
+                queue.WaitWhenCompleted().ContinueWith(t =>
                 {
                     if (completed > 0)
                         countdown.Signal();
@@ -153,7 +150,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(maxDegreeOfParallelism: 2, autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t => countdown.Signal());
+                queue.WaitWhenCompleted().ContinueWith(t => countdown.Signal());
 
                 int completed = 0;
                 queue.Enqueue(async () => { await Task.Delay(10); Interlocked.Increment(ref completed); });
@@ -179,7 +176,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue())
             {
-                queue.WaitWhenEmpty.ContinueWith(t =>
+                queue.WaitWhenCompleted().ContinueWith(t =>
                 {
                     if (completed > 2)
                         countdown.Signal();
@@ -207,7 +204,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t => countdown.Signal());
+                queue.WaitWhenCompleted().ContinueWith(t => countdown.Signal());
 
                 for (int i = 0; i < NumberOfEnqueuedItems; i++)
                 {
@@ -239,7 +236,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(maxDegreeOfParallelism: MaxDegreeOfParallelism, autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t => countdown.Signal());
+                queue.WaitWhenCompleted().ContinueWith(t => countdown.Signal());
 
                 for (int i = 0; i < NumberOfEnqueuedItems; i++)
                 {
@@ -273,7 +270,7 @@ namespace RDS.CaraBus.Tests
             var countdown = new CountdownEvent(1);
             using (var queue = new TaskQueue(maxDegreeOfParallelism: MaxDegreeOfParallelism, autoStart: false))
             {
-                queue.WaitWhenEmpty.ContinueWith(t => countdown.Signal());
+                queue.WaitWhenCompleted().ContinueWith(t => countdown.Signal());
 
                 for (int i = 0; i < NumberOfEnqueuedItems; i++)
                 {
@@ -297,36 +294,38 @@ namespace RDS.CaraBus.Tests
             }
         }
 
-        //[Test]
-        //public void Benchmark()
-        //{
-        //    var summary = BenchmarkDotNet.Running.BenchmarkRunner.Run<TaskQueueBenchmark>();
-        //}
+        [Test]
+        public void Benchmark()
+        {
+            var summary = BenchmarkDotNet.Running.BenchmarkRunner.Run<TaskQueueBenchmark>();
+        }
     }
 
-    //[MemoryDiagnoser]
-    //[ShortRunJob]
-    //public class TaskQueueBenchmark
-    //{
-    //    [Params(1, 2, 4)]
-    //    public byte MaxDegreeOfParallelism { get; set; }
+    [MemoryDiagnoser]
+    [ShortRunJob]
+    public class TaskQueueBenchmark
+    {
+        [Params(1, 2, 4)]
+        public byte MaxDegreeOfParallelism { get; set; }
 
-    //    private readonly CountdownEvent _countdown = new CountdownEvent(1);
+        private readonly CountdownEvent _countdown = new CountdownEvent(1);
 
-    //    [Benchmark]
-    //    public void Run()
-    //    {
-    //        _countdown.Reset();
-    //        using (var queue = new TaskQueue(autoStart: false, maxDegreeOfParallelism: MaxDegreeOfParallelism))
-    //        {
-    //            queue.WaitWhenEmpty.ContinueWith(t => _countdown.Signal());
+        [Benchmark]
+        public async Task Run()
+        {
+            _countdown.Reset();
+            using (var queue = new TaskQueue(autoStart: false, maxDegreeOfParallelism: MaxDegreeOfParallelism))
+            {
+                for (int i = 0; i < 100; i++)
+                    await queue.Enqueue(() =>
+                    {
+                        _countdown.Signal();
+                        return Task.CompletedTask;
+                    });
 
-    //            for (int i = 0; i < 100; i++)
-    //                queue.Enqueue(() => Task.CompletedTask);
-
-    //            queue.Start();
-    //            _countdown.Wait(5000);
-    //        }
-    //    }
-    //}
+                queue.Start();
+                _countdown.Wait(5000);
+            }
+        }
+    }
 }

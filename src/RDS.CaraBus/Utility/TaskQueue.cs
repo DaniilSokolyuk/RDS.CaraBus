@@ -13,7 +13,10 @@ namespace RDS.CaraBus.Utility
         private readonly ConcurrentQueue<Func<Task>> _queue = new ConcurrentQueue<Func<Task>>();
         private readonly SemaphoreSlim _semaphore;
         private readonly AsyncAutoResetEvent _autoResetEvent = new AsyncAutoResetEvent();
-        private TaskCompletionSource<bool> _tscQueue = new TaskCompletionSource<bool>();
+
+        private readonly AsyncConditionVariable _queueCompleted;
+        private readonly AsyncConditionVariable _notFull;
+        private readonly AsyncLock _mutex;
 
         private CancellationTokenSource _workLoopCancellationTokenSource;
         private readonly int _maxItems;
@@ -26,6 +29,10 @@ namespace RDS.CaraBus.Utility
             _semaphore = new SemaphoreSlim(maxDegreeOfParallelism);
             _logger = loggerFactory?.CreateLogger<TaskQueue>() ?? NullLogger<TaskQueue>.Instance;
 
+            _mutex = new AsyncLock();
+            _queueCompleted = new AsyncConditionVariable(_mutex);
+            _notFull = new AsyncConditionVariable(_mutex);
+
             if (autoStart)
             {
                 Start();
@@ -35,22 +42,29 @@ namespace RDS.CaraBus.Utility
         public int Queued => _queue.Count;
         public int Working => _working;
 
-        public Task WaitWhenEmpty => _tscQueue.Task;
+        public async Task WaitWhenCompleted()
+        {
+            using (await _mutex.LockAsync().ConfigureAwait(false))
+            {
+                await _queueCompleted.WaitAsync();
+            }
+        }
 
-        public bool Enqueue(Func<Task> task)
+        public async Task Enqueue(Func<Task> task)
         {
             if (task == null)
                 throw new ArgumentNullException(nameof(task));
 
-            if (_queue.Count >= _maxItems)
+            using (await _mutex.LockAsync())
             {
-                _logger.LogDebug("Ignoring queued task: Queue is full");
-                return false;
-            }
+                while (_queue.Count >= _maxItems)
+                {
+                    await _notFull.WaitAsync();
+                }
 
-            _queue.Enqueue(task);
-            _autoResetEvent.Set();
-            return true;
+                _queue.Enqueue(task);
+                _autoResetEvent.Set();
+            }
         }
 
         public void Start(CancellationToken token = default(CancellationToken))
@@ -63,7 +77,8 @@ namespace RDS.CaraBus.Utility
         {
             bool isTraceLogLevelEnabled = _logger.IsEnabled(LogLevel.Trace);
             if (isTraceLogLevelEnabled) _logger.LogTrace("Starting worker loop.");
-            Task.Run(async () => {
+            Task.Run(async () =>
+            {
                 while (!_workLoopCancellationTokenSource.Token.IsCancellationRequested)
                 {
                     try
@@ -91,11 +106,17 @@ namespace RDS.CaraBus.Utility
                             continue;
                         }
 
+                        using (await _mutex.LockAsync())
+                        {
+                            _notFull.Notify();
+                        }
+
                         Interlocked.Increment(ref _working);
                         if (isTraceLogLevelEnabled) _logger.LogTrace("Running dequeued task");
                         // TODO: Cancel after x amount of time.
                         var unawaited = Task.Run(() => task(), _workLoopCancellationTokenSource.Token)
-                            .ContinueWith(t => {
+                            .ContinueWith(t =>
+                            {
                                 Interlocked.Decrement(ref _working);
                                 _semaphore.Release();
 
@@ -113,12 +134,18 @@ namespace RDS.CaraBus.Utility
                                     _logger.LogTrace("Finished running dequeued task.");
                                 }
 
+
                                 if (_working == 0 && _queue.IsEmpty && _queue.Count == 0)
                                 {
-                                    if (isTraceLogLevelEnabled) _logger.LogTrace("Running completed action..");
-                                    // NOTE: There could be a race here where an a semaphore was taken but the queue was empty.
-                                    var _oldQueue = Interlocked.Exchange(ref _tscQueue, new TaskCompletionSource<bool>());
-                                    _oldQueue.TrySetResult(true);
+                                    using (_mutex.Lock())
+                                    {
+                                        if (_working == 0 && _queue.IsEmpty && _queue.Count == 0)
+                                        {
+                                            if (isTraceLogLevelEnabled) _logger.LogTrace("Running completed action..");
+
+                                            _queueCompleted.NotifyAll();
+                                        }
+                                    }
                                 }
                             });
                     }
@@ -132,7 +159,8 @@ namespace RDS.CaraBus.Utility
                     }
                 }
             }, _workLoopCancellationTokenSource.Token)
-                .ContinueWith(t => {
+                .ContinueWith(t =>
+                {
                     if (t.IsFaulted)
                     {
                         var ex = t.Exception.InnerException;

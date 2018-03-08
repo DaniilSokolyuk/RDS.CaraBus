@@ -103,7 +103,7 @@ namespace RDS.CaraBus
                         {
                             if (_options.TimeoutOnStop.HasValue && (_taskQueue.Queued > 0 || _taskQueue.Working > 0))
                             {
-                                await Task.WhenAny(_taskQueue.WaitWhenEmpty, Task.Delay(_options.TimeoutOnStop.Value)).ConfigureAwait(false);
+                                await Task.WhenAny(_taskQueue.WaitWhenCompleted(), Task.Delay(_options.TimeoutOnStop.Value)).ConfigureAwait(false);
                             }
 
                             _isRunning = false;

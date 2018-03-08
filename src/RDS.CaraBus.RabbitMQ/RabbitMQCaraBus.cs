@@ -88,7 +88,7 @@ namespace RDS.CaraBus.RabbitMQ
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.Received += async (model, ea) =>
             {
-                bool TryEnqueue() => _taskQueue.Enqueue(async () =>
+                await _taskQueue.Enqueue(async () =>
                 {
                     if (!cancellationToken.IsCancellationRequested)
                     {
@@ -119,11 +119,6 @@ namespace RDS.CaraBus.RabbitMQ
                         }
                     }
                 });
-
-                while (!cancellationToken.IsCancellationRequested && !TryEnqueue())
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken).ConfigureAwait(false);
-                }
             };
 
             channel.BasicConsume(queueName, false, consumer);
