@@ -308,7 +308,7 @@ namespace RDS.CaraBus.Tests
         [Params(1, 2, 4)]
         public byte MaxDegreeOfParallelism { get; set; }
 
-        private readonly CountdownEvent _countdown = new CountdownEvent(1);
+        private readonly CountdownEvent _countdown = new CountdownEvent(100);
 
         [Benchmark]
         public async Task Run()
